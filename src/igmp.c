@@ -27,7 +27,7 @@
 **  
 **  mrouted 3.9-beta3 - COPYRIGHT 1989 by The Board of Trustees of 
 **  Leland Stanford Junior University.
-**  - Original license can be found in the Stanford.txt file.
+**  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
 /**
@@ -39,7 +39,10 @@
  
 // Globals                  
 uint32_t     allhosts_group;          /* All hosts addr in net order */
-uint32_t     allrouters_group;          /* All hosts addr in net order */
+uint32_t     allrouters_group;          /* All IGMPv1/v2 router addr in net order */
+#if defined(IGMPv3_PROXY)
+uint32_t     allv3routers_group;          /* All IGMPv3 router addr in net order */
+#endif
               
 extern int MRouterFD;
 
@@ -74,6 +77,9 @@ void initIgmp() {
 
     allhosts_group   = htonl(INADDR_ALLHOSTS_GROUP);
     allrouters_group = htonl(INADDR_ALLRTRS_GROUP);
+#if defined(IGMPv3_PROXY)
+    allv3routers_group = htonl(INADDR_ALLV3RTRS_GROUP);
+#endif
 }
 
 /**
@@ -87,6 +93,9 @@ char *igmpPacketKind(u_int type, u_int code) {
     case IGMP_V1_MEMBERSHIP_REPORT:  return "V1 member report  ";
     case IGMP_V2_MEMBERSHIP_REPORT:  return "V2 member report  ";
     case IGMP_V2_LEAVE_GROUP:        return "Leave message     ";
+#if defined(IGMPv3_PROXY)
+    case IGMP_V3_MEMBERSHIP_REPORT:  return "V3 member report  ";
+#endif
     
     default:
         sprintf(unknown, "unk: 0x%02x/0x%02x    ", type, code);
@@ -104,6 +113,7 @@ void acceptIgmp(int recvlen) {
     struct ip *ip;
     struct igmp *igmp;
     int ipdatalen, iphdrlen, igmpdatalen;
+    char *buffer = NULL;
 
     if (recvlen < sizeof(struct ip)) {
         my_log(LOG_WARNING, 0,
@@ -114,6 +124,8 @@ void acceptIgmp(int recvlen) {
     ip        = (struct ip *)recv_buf;
     src       = ip->ip_src.s_addr;
     dst       = ip->ip_dst.s_addr;
+
+    my_log(LOG_DEBUG, 0, "\n\n ======== \n Got a IGMP request to process...");
 
     /* 
      * this is most likely a message from the kernel indicating that
@@ -147,9 +159,8 @@ void acceptIgmp(int recvlen) {
             // Activate the route.
             my_log(LOG_DEBUG, 0, "Route activate request from %s to %s",
 		    inetFmt(src,s1), inetFmt(dst,s2));
-            activateRoute(dst, src);
-            
 
+            activateRoute(dst, src);
         }
         return;
     }
@@ -164,8 +175,9 @@ void acceptIgmp(int recvlen) {
         return;
     }
 
-    igmp        = (struct igmp *)(recv_buf + iphdrlen);
-    group       = igmp->igmp_group.s_addr;
+    buffer      = recv_buf + iphdrlen;
+    igmp        = (struct igmp *)buffer;
+//    group       = igmp->igmp_group.s_addr;
     igmpdatalen = ipdatalen - IGMP_MINLEN;
     if (igmpdatalen < 0) {
         my_log(LOG_WARNING, 0,
@@ -181,23 +193,35 @@ void acceptIgmp(int recvlen) {
     switch (igmp->igmp_type) {
     case IGMP_V1_MEMBERSHIP_REPORT:
     case IGMP_V2_MEMBERSHIP_REPORT:
+        group       = igmp->igmp_group.s_addr;
         acceptGroupReport(src, group, igmp->igmp_type);
-        return;
+        break;
     
     case IGMP_V2_LEAVE_GROUP:
+        group       = igmp->igmp_group.s_addr;
         acceptLeaveMessage(src, group);
-        return;
+        break;
     
+    case IGMP_V3_MEMBERSHIP_REPORT:
+        acceptIGMPv3GroupReport(src, igmp->igmp_type, buffer);    
+	break;	
+
     case IGMP_MEMBERSHIP_QUERY:
-        return;
+        /* FIXME */
+        acceptIGMPMembershipQuery(src, igmp->igmp_type, buffer, igmpdatalen);
+        break;
+
+    //*/
 
     default:
         my_log(LOG_INFO, 0,
             "ignoring unknown IGMP message type %x from %s to %s",
             igmp->igmp_type, inetFmt(src, s1),
             inetFmt(dst, s2));
-        return;
+        break;
     }
+
+    my_log(LOG_DEBUG, 0, "\n\n ======== \n End a IGMP request to process...");
 }
 
 
@@ -232,8 +256,103 @@ void buildIgmp(uint32_t src, uint32_t dst, int type, int code, uint32_t group, i
     igmp->igmp_code         = code;
     igmp->igmp_group.s_addr = group;
     igmp->igmp_cksum        = 0;
-    igmp->igmp_cksum        = inetChksum((u_short *)igmp,
-                                         IP_HEADER_RAOPT_LEN + datalen);
+    igmp->igmp_cksum        = inetChksum((u_short *)igmp, /* FIXME: Is a bug?*/
+                                         IGMP_MINLEN + datalen);
+
+}
+
+/*
+ * Construct an IGMPv3 message in the output packet buffer.  The caller may
+ * have already placed data in that buffer, of length 'datalen'.
+ */
+void 
+buildIgmpv3Query(uint32_t src, uint32_t dst, /* IP src + dst */
+                 int type, int code, uint32_t group, uint16_t nsrcs, uint32_t *srcs, int srsp, int qqic, int datalen) {
+    struct ip *ip;
+    struct igmpv3_query *ih3; /* IGMPv3 Query header */
+    extern int curttl;
+
+    /* ip header */
+    ip                      = (struct ip *)send_buf;
+    ip->ip_src.s_addr       = src;
+    ip->ip_dst.s_addr       = dst;
+    ip_set_len(ip, IP_HEADER_RAOPT_LEN + (IGMP_V3_QUERY_MINLEN + nsrcs * sizeof(uint32_t)) + datalen);
+
+    if (IN_MULTICAST(ntohl(dst))) {
+        ip->ip_ttl = curttl;
+    } else {
+        ip->ip_ttl = MAXTTL;
+    }
+
+    /* Add Router Alert option */
+    ((u_char*)send_buf+MIN_IP_HEADER_LEN)[0] = IPOPT_RA;
+    ((u_char*)send_buf+MIN_IP_HEADER_LEN)[1] = 0x04;
+    ((u_char*)send_buf+MIN_IP_HEADER_LEN)[2] = 0x00;
+    ((u_char*)send_buf+MIN_IP_HEADER_LEN)[3] = 0x00;
+
+    /* IGMPv3 query message */
+    ih3               = (struct igmpv3_query *)(send_buf + IP_HEADER_RAOPT_LEN);
+    ih3->type         = type;
+    ih3->code         = encodeExpTimeCode8(code);
+    ih3->group        = group;
+    ih3->resv         = 0;
+    ih3->suppress     = srsp;
+    ih3->qrv          = 0; /* XXX: hard code, used default value 2 */
+    ih3->qqic         = encodeExpTimeCode8(qqic);
+    ih3->nsrcs        = htons(nsrcs);
+    if(nsrcs != 0)
+        memcpy(ih3->srcs, srcs, nsrcs * sizeof(uint32_t));
+    ih3->csum         = 0;
+    ih3->csum         = inetChksum((u_short *)ih3,
+                                         (IGMP_V3_QUERY_MINLEN + nsrcs * sizeof(uint32_t)) + datalen);
+
+}
+
+void sendIgmpv3query(uint32_t src, uint32_t dst, uint32_t len)
+{
+    struct sockaddr_in sdst;
+    int setloop = 0, setigmpsource = 0;
+    size_t send_len = 0;
+
+    uint8_t type = IGMP_MEMBERSHIP_QUERY; /* XXX: This is hacking code */
+
+    if (IN_MULTICAST(ntohl(dst))) {
+        k_set_if(src);
+        setigmpsource = 1;
+        if (dst == allhosts_group) {
+            setloop = 1;
+            k_set_loop(true);
+        }
+    }
+
+    memset(&sdst, 0, sizeof(sdst));
+    sdst.sin_family = AF_INET;
+#ifdef HAVE_STRUCT_SOCKADDR_IN_SIN_LEN
+    sdst.sin_len = sizeof(sdst);
+#endif
+    sdst.sin_addr.s_addr = dst;
+    if ((send_len = sendto(MRouterFD, send_buf,
+               len, 0,
+               (struct sockaddr *)&sdst, sizeof(sdst))) < 0) {
+        if (errno == ENETDOWN)
+            my_log(LOG_ERR, errno, "Sender VIF was down.");
+        else
+            my_log(LOG_INFO, errno,
+                "sendto to %s on %s, len %d",
+                inetFmt(dst, s1), inetFmt(src, s2), send_len);
+    }
+
+    if(setigmpsource) {
+        if (setloop) {
+            k_set_loop(false);
+        }
+        // Restore original...
+        k_set_if(INADDR_ANY);
+    }
+
+    my_log(LOG_DEBUG, 0, "SENT %s from %-15s to %s. len %d",
+	    igmpPacketKind(type, 0), src == INADDR_ANY ? "INADDR_ANY" :
+	    inetFmt(src, s1), inetFmt(dst, s2), send_len);
 
 }
 
@@ -286,3 +405,4 @@ void sendIgmp(uint32_t src, uint32_t dst, int type, int code, uint32_t group, in
 	    igmpPacketKind(type, code), src == INADDR_ANY ? "INADDR_ANY" :
 	    inetFmt(src, s1), inetFmt(dst, s2));
 }
+

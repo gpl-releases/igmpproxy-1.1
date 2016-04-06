@@ -30,37 +30,4 @@
 **  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
-/**
-*   udpsock.c contains function for creating a UDP socket.
-*
-*/
-
-#include "defs.h"
-#include "igmpproxy.h"
-
-/**
-*  Creates and connects a simple UDP socket to the target 
-*  'PeerInAdr':'PeerPort'
-*
-*   @param PeerInAdr - The address to connect to
-*   @param PeerPort  - The port to connect to
-*           
-*/
-int openUdpSocket( uint32_t PeerInAdr, uint16_t PeerPort ) {
-    int Sock;
-    struct sockaddr_in SockAdr;
-    
-    if( (Sock = socket( AF_INET, SOCK_RAW, IPPROTO_IGMP )) < 0 )
-        my_log( LOG_ERR, errno, "UDP socket open" );
-    
-    memset( &SockAdr, 0, sizeof( SockAdr ) );
-    SockAdr.sin_family      = AF_INET;
-    SockAdr.sin_port        = htons(PeerPort);
-    SockAdr.sin_addr.s_addr = htonl(PeerInAdr);
-    
-    if( bind( Sock, (struct sockaddr *)&SockAdr, sizeof( SockAdr ) ) )
-        my_log( LOG_ERR, errno, "UDP socket bind" );
-    
-    return Sock;
-}
-
+//#define VERSION "0.1 beta2"

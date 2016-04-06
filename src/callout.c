@@ -27,11 +27,12 @@
 **  
 **  mrouted 3.9-beta3 - COPYRIGHT 1989 by The Board of Trustees of 
 **  Leland Stanford Junior University.
-**  - Original license can be found in the Stanford.txt file.
+**  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
 
 
+#include "defs.h"
 #include "igmpproxy.h"
 
 /* the code below implements a callout queue */
@@ -49,17 +50,50 @@ struct timeOutQueue {
 // Method for dumping the Queue to the log.
 static void debugQueue(void);
 
+
+/**
+ * Is this timer in callout queue.
+ */
+int timer_inQueue(int timer_id) {
+    //assert(timer_id != 0);    
+
+    struct timeOutQueue  *ptr;
+
+    for (ptr = queue; ptr; ptr = ptr->next) {
+            if(ptr->id == timer_id)
+		return 1;
+            //my_log(LOG_DEBUG, 0, "(Id:%d, Time:%d) ", ptr->id, ptr->time);
+    }
+
+    return 0;
+}
+
+/**
+ *  timer_newTimerid	-	allocate an timer id
+ *
+ *  Returns a suitable unique value for a new timer id
+ *    number.
+ */
+static int timer_newTimerid(void) {
+    for (;;) {
+        if (++id <= 0)
+            id = 1;
+        if (!timer_inQueue(id))
+            return id;
+    }
+}
+
 /**
 *   Initializes the callout queue
 */
-void callout_init() {
+void callout_init(void) {
     queue = NULL;
 }
 
 /**
 *   Clears all scheduled timeouts...
 */
-void free_all_callouts() {
+void free_all_callouts(void) {
     struct timeOutQueue *p;
 
     while (queue) {
@@ -98,7 +132,7 @@ void age_callout_queue(int elapsed_time) {
  * Return in how many seconds age_callout_queue() would like to be called.
  * Return -1 if there are no events pending.
  */
-int timer_nextTimer() {
+int timer_nextTimer(void) {
     if (queue) {
         if (queue->time < 0) {
             my_log(LOG_WARNING, 0, "timer_nextTimer top of queue says %d", 
@@ -120,6 +154,8 @@ int timer_setTimer(int delay, timer_f action, void *data) {
     struct     timeOutQueue  *ptr, *node, *prev;
     int i = 0;
 
+    assert(delay >= 0);
+
     /* create a node */ 
     node = (struct timeOutQueue *)malloc(sizeof(struct timeOutQueue));
     if (node == 0) {
@@ -130,7 +166,7 @@ int timer_setTimer(int delay, timer_f action, void *data) {
     node->data = data;
     node->time = delay; 
     node->next = 0; 
-    node->id   = ++id;
+    node->id   = timer_newTimerid( );
 
     prev = ptr = queue;
 
@@ -182,8 +218,9 @@ int timer_leftTimer(int timer_id) {
     struct timeOutQueue *ptr;
     int left = 0;
 
-    if (!timer_id)
+    if (!timer_id) {
         return -1;
+    }
 
     for (ptr = queue; ptr; ptr = ptr->next) {
         left += ptr->time;
@@ -191,6 +228,7 @@ int timer_leftTimer(int timer_id) {
             return left;
         }
     }
+    
     return -1;
 }
 
@@ -201,7 +239,7 @@ int timer_clearTimer(int  timer_id) {
     struct timeOutQueue  *ptr, *prev;
     int i = 0;
 
-    if (!timer_id)
+    if (timer_id == INVAILD_TIMER)
         return 0;
 
     prev = ptr = queue;
@@ -225,10 +263,11 @@ int timer_clearTimer(int  timer_id) {
             /* increment next node if any */
             if (ptr->next != 0)
                 (ptr->next)->time += ptr->time;
-
+#if 0
             if (ptr->data)
                 free(ptr->data);
-            my_log(LOG_DEBUG, 0, "deleted timer %d (#%d)", ptr->id, i);
+#endif
+            my_log(LOG_DEBUG, 0, "Deleted timer %d (#%d)", ptr->id, i);
             free(ptr);
             debugQueue();
             return 1;
@@ -246,10 +285,13 @@ int timer_clearTimer(int  timer_id) {
 /**
  * debugging utility
  */
-static void debugQueue() {
+static void debugQueue(void) {
     struct timeOutQueue  *ptr;
 
+    my_log(LOG_DEBUG, 0, "\nTimer in queue ============== start");
     for (ptr = queue; ptr; ptr = ptr->next) {
             my_log(LOG_DEBUG, 0, "(Id:%d, Time:%d) ", ptr->id, ptr->time);
     }
+    my_log(LOG_DEBUG, 0, "Timer in queue ============== end\n");
 }
+

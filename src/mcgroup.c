@@ -27,7 +27,7 @@
 **  
 **  mrouted 3.9-beta3 - COPYRIGHT 1989 by The Board of Trustees of 
 **  Leland Stanford Junior University.
-**  - Original license can be found in the Stanford.txt file.
+**  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
 /**
@@ -35,7 +35,22 @@
 *
 */
 
+#include "defs.h"
 #include "igmpproxy.h"
+
+#include <alloca.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+
        
 
 /**
@@ -84,3 +99,96 @@ int joinMcGroup( int UdpSock, struct IfDesc *IfDp, uint32_t mcastaddr ) {
 int leaveMcGroup( int UdpSock, struct IfDesc *IfDp, uint32_t mcastaddr ) {
     return joinleave( 'l', UdpSock, IfDp, mcastaddr );
 }
+
+#if 0
+/* Full-state filter operations.  */
+struct ip_msfilter
+  {
+    /* IP multicast address of group.  */
+    struct in_addr imsf_multiaddr;
+    //uint32_t imsf_multiaddr;
+
+    /* Local IP address of interface.  */
+    struct in_addr imsf_interface;
+    //uint32_t imsf_interface;
+
+    /* Filter mode.  */
+    uint32_t imsf_fmode;
+
+    /* Number of source addresses.  */
+    uint32_t imsf_numsrc;
+    /* Source addresses.  */
+    struct in_addr imsf_slist[1];
+    //uint32_t imsf_slist[1];
+  };
+#endif
+
+#define IP_MSFILTER_SIZE(numsrc) (sizeof (struct ip_msfilter) \
+				  - sizeof (struct in_addr)		      \
+				  + (numsrc) * sizeof (struct in_addr))
+
+#define IP_MSFILTER 41
+
+/*
+ * Set the source list and the source filter
+ * on upstream interface
+ */
+void setSourceFilter(int UdpSock, struct member *mb) {
+    assert(mb != NULL);
+
+    struct IfDesc *upStreamIf = NULL;
+    struct source_in_member *src_in_mb = NULL;
+    int nnodes = 0;
+            
+    upStreamIf = getIfByIx( upStreamVif );
+
+#define	MAX_ADDRS 500
+    char buffer[IP_MSFILTER_SIZE(MAX_ADDRS)];
+    memset(buffer, IP_MSFILTER_SIZE(MAX_ADDRS), 0);
+    struct ip_msfilter *imsfp = NULL;
+    int i = 0;
+
+    // Sanitycheck the group adress...
+    if( ! IN_MULTICAST( ntohl(mb->mcast.s_addr) )) {
+        my_log(LOG_WARNING, 0, "The group address %s is not a valid Multicast group. set source filter failed.",
+            inetFmt(mb->mcast.s_addr, s1));
+        return;
+    } else {
+        my_log(LOG_WARNING, 0, "The group address is %s\tmode %s, number of source is %d",
+            inetFmt(mb->mcast.s_addr, s1), mb->fmode ? "INCLUDE" : "EXCLUDE", mb->nsrcs);
+    }
+    
+    imsfp = (struct ip_msfilter *) &buffer;
+#if 1
+    imsfp->imsf_multiaddr = mb->mcast;
+    imsfp->imsf_interface = upStreamIf->InAdr;
+#else
+    imsfp->imsf_multiaddr = mb->mcast.s_addr;
+    imsfp->imsf_interface = upStreamIf->InAdr.s_addr;
+#endif
+    imsfp->imsf_fmode  = mb->fmode;
+    imsfp->imsf_numsrc = mb->nsrcs;
+
+    nnodes = mb->nsrcs;
+    list_for_each(&mb->sources, src_in_mb, list) {
+        if (nnodes--) {
+            if(src_in_mb) {
+#if 1
+                imsfp->imsf_slist[i] = src_in_mb->addr;
+#else
+                imsfp->imsf_slist[i] = src_in_mb->addr.s_addr;
+#endif
+                i++;
+            }
+        }
+    }
+    assert(i == mb->nsrcs);
+    assert(mb->nsrcs <= MAX_ADDRS);
+
+    if (setsockopt(UdpSock, IPPROTO_IP, IP_MSFILTER, imsfp, IP_MSFILTER_SIZE(mb->nsrcs)) < 0 ) {
+        my_log(LOG_ERR, errno, "setsockopt IP_MSFILTER fail. nnodes %d", nnodes); 
+    }
+
+    return;
+}
+

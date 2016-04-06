@@ -1,10 +1,17 @@
-IGMPproxy is a simple mulitcast router that only uses the IGMP protocol.
+IGMPproxy is a simple mulitcast router for Linux
+that only uses the IGMP protocol.
 
-Supported operating systems:
- - Linux
- - FreeBSD
- - NetBSD
- - OpenBSD
- - DragonFly BSD
+This software is released under the GNU GPL license v2.
 
-This software is released under the GNU GPL license v2. See details in COPYING.
+
+Installation
+------------
+Chdir to the 'src' folder.
+
+To install type:
+
+make
+make install
+
+
+

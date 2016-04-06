@@ -27,10 +27,11 @@
 **  
 **  mrouted 3.9-beta3 - COPYRIGHT 1989 by The Board of Trustees of 
 **  Leland Stanford Junior University.
-**  - Original license can be found in the Stanford.txt file.
+**  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
 
+#include "defs.h"
 #include "igmpproxy.h"
 
 /*
@@ -64,6 +65,7 @@ char *inetFmt(uint32_t addr, char *s) {
     register u_char *a;
 
     a = (u_char *)&addr;
+    memset(s, 0, 19);
     sprintf(s, "%u.%u.%u.%u", a[0], a[1], a[2], a[3]);
     return(s);
 }
@@ -113,10 +115,10 @@ char *inetFmts(uint32_t addr, uint32_t mask, char *s) {
  *
  */
 uint16_t inetChksum(uint16_t *addr, int len) {
-    register int nleft = len;
-    register uint16_t *w = addr;
-    uint16_t answer = 0;
-    register int32_t sum = 0;
+    register int nleft = (int)len;
+    register u_short *w = addr;
+    u_short answer = 0;
+    register int sum = 0;
 
     /*
      *  Our algorithm is simple, using a 32 bit accumulator (sum),
@@ -131,7 +133,7 @@ uint16_t inetChksum(uint16_t *addr, int len) {
 
     /* mop up an odd byte, if necessary */
     if (nleft == 1) {
-        *(uint8_t *) (&answer) = *(uint8_t *)w ;
+        *(u_char *) (&answer) = *(u_char *)w ;
         sum += answer;
     }
 

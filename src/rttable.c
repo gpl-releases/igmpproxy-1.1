@@ -27,7 +27,7 @@
 **  
 **  mrouted 3.9-beta3 - COPYRIGHT 1989 by The Board of Trustees of 
 **  Leland Stanford Junior University.
-**  - Original license can be found in the Stanford.txt file.
+**  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
 /**
@@ -37,7 +37,20 @@
 *     recieved request.
 */
 
+#ifndef MC4_CHANGES
+#define MC4_CHANGES 1
+#endif
+
+#include "defs.h"
 #include "igmpproxy.h"
+#if MC4_CHANGES
+#include <linux/if_vlan.h>
+#include <sys/socket.h>
+#include <linux/sockios.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <string.h>
+#endif
     
 /**
 *   Routing table structure definition. Double linked list...
@@ -67,6 +80,9 @@ void logRouteTable(char *header);
 int  internAgeRoute(struct RouteTable*  croute);
 int internUpdateKernelRoute(struct RouteTable *route, int activate);
 
+#if MC4_CHANGES
+int IsIfVlan(char * ifName);
+#endif
 // Socket for sending join or leave requests.
 int mcGroupSock = 0;
 
@@ -74,7 +90,7 @@ int mcGroupSock = 0;
 /**
 *   Function for retrieving the Multicast Group socket.
 */
-int getMcGroupSock() {
+int getMcGroupSock(void) {
     if( ! mcGroupSock ) {
         mcGroupSock = openUdpSocket( INADDR_ANY, 0 );;
     }
@@ -84,7 +100,7 @@ int getMcGroupSock() {
 /**
 *   Initializes the routing table.
 */
-void initRouteTable() {
+void initRouteTable(void) {
     unsigned Ix;
     struct IfDesc *Dp;
 
@@ -100,6 +116,13 @@ void initRouteTable() {
             
             //k_join(allrouters_group, Dp->InAdr.s_addr);
             joinMcGroup( getMcGroupSock(), Dp, allrouters_group );
+
+#if defined(IGMPv3_PROXY)
+            my_log(LOG_DEBUG, 0, "Joining all-v3routers group %s on vif %s",
+                         inetFmt(allv3routers_group,s1),inetFmt(Dp->InAdr.s_addr,s2));
+            
+            joinMcGroup( getMcGroupSock(), Dp, allv3routers_group );
+#endif
         }
     }
 }
@@ -119,7 +142,7 @@ void sendJoinLeaveUpstream(struct RouteTable* route, int join) {
 
     // Check if there is a white list for the upstram VIF
     if (upstrIf->allowedgroups != NULL) {
-      uint32_t           group = route->group;
+        uint32_t           group = route->group;
         struct SubnetList* sn;
 
         // Check if this Request is legit to be forwarded to upstream
@@ -170,7 +193,7 @@ void sendJoinLeaveUpstream(struct RouteTable* route, int join) {
 /**
 *   Clear all routes from routing table, and alerts Leaves upstream.
 */
-void clearAllRoutes() {
+void clearAllRoutes(void) {
     struct RouteTable   *croute, *remainroute;
 
     // Loop through all routes...
@@ -224,6 +247,7 @@ int insertRoute(uint32_t group, int ifx) {
     
     struct Config *conf = getCommonConfig();
     struct RouteTable*  croute;
+    int result = 1;
 
     // Sanitycheck the group adress...
     if( ! IN_MULTICAST( ntohl(group) )) {
@@ -357,6 +381,115 @@ int insertRoute(uint32_t group, int ifx) {
     return 1;
 }
 
+int updateRoute(uint32_t group)
+{
+    struct RouteTable*  croute;
+    int result = 0;
+
+    croute = findRoute(group);
+    if(croute && croute->originAddr > 0) {
+        unsigned Ix;
+        struct IfDesc *Dp = NULL;
+        struct group *gp = NULL;
+        struct source *src = NULL;
+        
+        // XXX: Don't setting this option
+        //BIT_ZERO(croute->vifBits);
+
+        my_log(LOG_INFO, 0, "=====================================");
+        for ( Ix = 0; (Dp = getIfByIx(Ix)); Ix++ ) {
+            my_log(LOG_INFO, 0, "Dp->Name %s, Ix %d.", Dp->Name, Ix);
+            if ( Dp->InAdr.s_addr && ! (Dp->Flags & IFF_LOOPBACK) && (Dp->state == IF_STATE_DOWNSTREAM) ) {
+                my_log(LOG_INFO, 0, "Find the group in interface.");
+                gp = interfaceGroupLookup(Dp, group);
+                if(gp) {
+                    my_log(LOG_INFO, 0, "Find the source in group.");
+                    src = groupSourceLookup(gp, croute->originAddr);
+
+                    my_log(LOG_INFO, 0, "Find the route entry.");
+                    if((gp->fmode == IGMP_V3_FMODE_INCLUDE && src) || (gp->fmode == IGMP_V3_FMODE_EXCLUDE && ((!src) || (src && src->fstate == 1)))) {
+                        BIT_SET(croute->vifBits, Dp->index);
+                        my_log(LOG_INFO, 0, "Setting vifBits %d.", Dp->index);
+                    } else {
+                        BIT_CLR(croute->vifBits, Dp->index);
+                        my_log(LOG_INFO, 0, "Cleaning vifBits %d.", Dp->index);
+                    }
+                }
+            }
+        }
+        my_log(LOG_INFO, 0, "=====================================");
+
+        // Only update kernel table if there are listeners !
+        if(croute->vifBits > 0) {
+            result = internUpdateKernelRoute(croute, 1);
+            my_log(LOG_INFO, 0, "Setting route entry to kernel.");
+        }
+    }
+
+    logRouteTable("Update Route");
+    return result;  
+}
+
+/**
+*   Delete a specified route. Returns 1 on success,
+*   and 0 if route was not found.
+*/
+int deleteRoute(uint32_t group) {
+    int result = 1;
+    struct RouteTable*  croute;
+
+    croute = findRoute(group);
+    
+    // If croute is null, no routes was found.
+    if(croute==NULL) {
+        return 0;
+    }
+
+    // Log the cleanup in debugmode...
+    my_log(LOG_DEBUG, 0, "Delete route entry for %s from table.",
+                 inetFmt(croute->group, s1));
+
+    //BIT_ZERO(croute->vifBits);
+
+    // Uninstall current route from kernel
+    if(!internUpdateKernelRoute(croute, 0)) {
+        my_log(LOG_WARNING, 0, "The removal from Kernel failed.");
+        result = 0;
+    }
+
+   // Send Leave request upstream if group is joined
+    if(croute->upstrState == ROUTESTATE_JOINED) //|| 
+    //   (croute->upstrState == ROUTESTATE_CHECK_LAST_MEMBER && !conf->fastUpstreamLeave)) 
+    {
+        sendJoinLeaveUpstream(croute, 0);
+    }
+
+    // Update pointers...
+    if(croute->prevroute == NULL) {
+        // Topmost node...
+        if(croute->nextroute != NULL) {
+            croute->nextroute->prevroute = NULL;
+        }
+        routing_table = croute->nextroute;
+
+    } else {
+        croute->prevroute->nextroute = croute->nextroute;
+        if(croute->nextroute != NULL) {
+            croute->nextroute->prevroute = croute->prevroute;
+        }
+    }
+    // Free the memory, and set the route to NULL...
+    free(croute);
+    croute = NULL;
+
+    logRouteTable("Delete route");
+
+    return result;
+}
+
+
+
+
 /**
 *   Activates a passive group. If the group is already
 *   activated, it's reinstalled in the kernel. If
@@ -388,14 +521,21 @@ int activateRoute(uint32_t group, uint32_t originAddr) {
                     inetFmt(croute->group, s1),
                     inetFmt(croute->originAddr, s2),
                     inetFmt(originAddr, s3));
+            } else {
+                my_log(LOG_WARNING, 0, "get {S/G} with (%s / %s)", inetFmt(originAddr, s1), inetFmt(croute->group, s2));
             }
             croute->originAddr = originAddr;
         }
 
+#if defined(IGMPv3_PROXY)
+        /* This is chance to update vifBits */
+        updateRoute(group);
+#else
         // Only update kernel table if there are listeners !
         if(croute->vifBits > 0) {
             result = internUpdateKernelRoute(croute, 1);
         }
+#endif
     }
     logRouteTable("Activate Route");
 
@@ -407,7 +547,7 @@ int activateRoute(uint32_t group, uint32_t originAddr) {
 *   This function loops through all routes, and updates the age 
 *   of any active routes.
 */
-void ageActiveRoutes() {
+void ageActiveRoutes(void) {
     struct RouteTable   *croute, *nroute;
     
     my_log(LOG_DEBUG, 0, "Aging routes in table.");
@@ -540,6 +680,9 @@ int internAgeRoute(struct RouteTable*  croute) {
         if(croute->vifBits == croute->ageVifBits) {
             // Everything is in perfect order, so we just update the route age.
             croute->ageValue = conf->robustnessValue;
+            my_log(LOG_DEBUG, 0, "Everything is in perfect order, so we just update the route age.");
+
+
             //croute->ageActivity = 0;
         } else {
             // One or more VIF has not gotten any response.
@@ -547,6 +690,7 @@ int internAgeRoute(struct RouteTable*  croute) {
 
             // Update the actual bits for the route...
             croute->vifBits = croute->ageVifBits;
+            my_log(LOG_DEBUG, 0, "Update the actual bits for the route...");
         }
     } 
     // Check if there have been activity in aging process...
@@ -559,6 +703,9 @@ int internAgeRoute(struct RouteTable*  croute) {
 
             // Register changes in this round as well..
             croute->ageActivity++;
+            my_log(LOG_DEBUG, 0, "Register changes in this round as well..");
+
+
         }
     }
 
@@ -576,6 +723,10 @@ int internAgeRoute(struct RouteTable*  croute) {
             // We append the activity counter to the age, and continue...
             croute->ageValue = croute->ageActivity;
             croute->ageActivity = 0;
+            my_log(LOG_DEBUG, 0, "Removing group %s. Died of old age.",
+                         inetFmt(croute->group,s1));
+
+
         } else {
 
             my_log(LOG_DEBUG, 0, "Removing group %s. Died of old age.",
@@ -593,6 +744,57 @@ int internAgeRoute(struct RouteTable*  croute) {
 
     return result;
 }
+
+#if MC4_CHANGES
+/* This function checks if the given interface is VLAN if or not
+ * If its VLAN interface the forwarding is done by FPP
+ * so we disable forwarding on those interfaces by Linux
+ * The only interface allowed is wifi(ath0) interface
+ */
+int IsIfVlan(char * ifName)
+{
+    int err, rc = 1;
+    struct vlan_ioctl_args if_request;
+    int vlan_fd;
+	
+    memset(&if_request, 0, sizeof(if_request));
+
+    /*Open a socket fd */
+    if ((vlan_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    {
+	my_log(LOG_DEBUG, 0,  "%s:, Unable to create a soket\n", __func__);
+	return 0;
+    }   
+
+    /*
+     * Check if the interface has real device, then its VLAN interface
+     */
+    if_request.cmd = GET_VLAN_REALDEV_NAME_CMD;
+    strcpy(&if_request.device1[0], (char *)ifName);
+
+    if ((err = ioctl(vlan_fd, SIOCGIFVLAN, &if_request)) < 0)
+    {
+	switch(errno)
+	{
+	    case EINVAL:
+    		my_log(LOG_DEBUG, 0, "EINVAL\n");
+		rc = 0;
+		break;
+	    case ENODEV:
+		my_log(LOG_DEBUG, 0, "%s: Warning, Found no information about %s interface\n", __func__, ifName);
+		rc = 0;
+		break;
+	    default:
+		my_log(LOG_DEBUG, 0, "%s: ioctl error %d\n", __func__, errno);
+		rc = 0;
+		break;
+	}
+    }
+    //my_log(LOG_DEBUG, 0, "Real devname:%s\n",if_request.u.device2);
+    close(vlan_fd);
+    return rc;
+}
+#endif
 
 /**
 *   Updates the Kernel routing table. If activate is 1, the route
@@ -618,11 +820,23 @@ int internUpdateKernelRoute(struct RouteTable *route, int activate) {
         // Set the TTL's for the route descriptor...
         for ( Ix = 0; (Dp = getIfByIx(Ix)); Ix++ ) {
             if(Dp->state == IF_STATE_UPSTREAM) {
+                my_log(LOG_DEBUG, 0, "Identified VIF #%d as upstream.", Dp->index);
                 mrDesc.InVif = Dp->index;
             }
             else if(BIT_TST(route->vifBits, Dp->index)) {
-                my_log(LOG_DEBUG, 0, "Setting TTL for Vif %d to %d", Dp->index, Dp->threshold);
-                mrDesc.TtlVc[ Dp->index ] = Dp->threshold;
+                my_log(LOG_DEBUG, 0, "Setting TTL for %s (Vif) %d to %d", Dp->Name, Dp->index, Dp->threshold);
+#if MC4_CHANGES
+		/* If its ethernet interface then forwarding is done by FPP, also check if its VLAN
+		 * interface since that is also taken care by FPP*/
+		if(!strncasecmp(Dp->Name,"eth",3)|| IsIfVlan(Dp->Name)) {
+		  	my_log(LOG_DEBUG, 0, "Setting TTL for %s (Vif) %d to %d", Dp->Name, Dp->index, 255);
+			/* Setting ttl vector as 255 means kernel will not forward on that interface */
+			mrDesc.TtlVc[ Dp->index ] = 255;
+		} else 
+                	mrDesc.TtlVc[ Dp->index ] = Dp->threshold;
+#else
+		mrDesc.TtlVc[ Dp->index ] = Dp->threshold;
+#endif
             }
         }
     
@@ -630,6 +844,7 @@ int internUpdateKernelRoute(struct RouteTable *route, int activate) {
         if(activate) {
             // Add route in kernel...
             addMRoute( &mrDesc );
+
     
         } else {
             // Delete the route from Kernel...

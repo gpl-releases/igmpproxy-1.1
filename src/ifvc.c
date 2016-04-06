@@ -27,11 +27,13 @@
 **  
 **  mrouted 3.9-beta3 - COPYRIGHT 1989 by The Board of Trustees of 
 **  Leland Stanford Junior University.
-**  - Original license can be found in the Stanford.txt file.
+**  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
 
+#include "defs.h"
 #include "igmpproxy.h"
+#include <linux/sockios.h>
 
 struct IfDesc IfDescVc[ MAX_IF ], *IfDescEp = IfDescVc;
 
@@ -40,7 +42,7 @@ struct IfDesc IfDescVc[ MAX_IF ], *IfDescEp = IfDescVc;
 ** the module will fail if they are called before the vector is build.
 **          
 */
-void buildIfVc() {
+void buildIfVc(void) {
     struct ifreq IfVc[ sizeof( IfDescVc ) / sizeof( IfDescVc[ 0 ] )  ];
     struct ifreq *IfEp;
 
@@ -115,6 +117,14 @@ void buildIfVc() {
             mask = ((struct sockaddr_in *)&IfReq.ifr_addr)->sin_addr.s_addr;
             subnet = addr & mask;
 
+            // Get the physical index of the Interface
+            if (ioctl(Sock, SIOCGIFINDEX, &IfReq ) < 0)
+                my_log(LOG_ERR, errno, "ioctl SIOCGIFINDEX for %s", IfReq.ifr_name);
+            
+            my_log(LOG_DEBUG, 0, "Physical Index value of IF '%s' is %d",
+                IfDescEp->Name, IfReq.ifr_ifindex);
+
+
             /* get if flags
             **
             ** typical flags:
@@ -144,13 +154,19 @@ void buildIfVc() {
             IfDescEp->threshold     = DEFAULT_THRESHOLD;   /* ttl limit */
             IfDescEp->ratelimit     = DEFAULT_RATELIMIT; 
             
+            IfDescEp->isQuerier     = false;
+            IfDescEp->otherQuerierPresentTimer = INVAILD_TIMER;
+
+            list_head_init(&IfDescEp->groups);
+            IfDescEp->ngps          = 0;
 
             // Debug log the result...
-            my_log( LOG_DEBUG, 0, "buildIfVc: Interface %s Addr: %s, Flags: 0x%04x, Network: %s",
+            my_log( LOG_DEBUG, 0, "buildIfVc: Interface %s Addr: %s, Flags: 0x%04x, Network: %s ngps %d",
                  IfDescEp->Name,
                  fmtInAdr( FmtBu, IfDescEp->InAdr ),
                  IfDescEp->Flags,
-                 inetFmts(subnet,mask, s1));
+                 inetFmts(subnet,mask, s1),
+                 IfDescEp->ngps);
 
             IfDescEp++;
         } 
@@ -242,8 +258,24 @@ int isAdressValidForIf( struct IfDesc* intrface, uint32_t ipaddr ) {
     if(intrface == NULL) {
         return 0;
     }
+
+    /* 2010/7/12, Tecom Wuhan, copy patch from RJ-11 project. Accept multicast packet from any address*/
+    /* jeanson */
+    if (intrface->state == IF_STATE_UPSTREAM)
+        return 1;
+
     // Loop through all registered allowed nets of the VIF...
     for(currsubnet = intrface->allowednets; currsubnet != NULL; currsubnet = currsubnet->next) {
+
+        /*
+        IF_DEBUG log(LOG_DEBUG, 0, "Testing %s for subnet %s, mask %s: Result net: %s",
+            inetFmt(ipaddr, s1),
+            inetFmt(currsubnet->subnet_addr, s2),
+            inetFmt(currsubnet->subnet_mask, s3),
+            inetFmt((ipaddr & currsubnet->subnet_mask), s4)
+            );
+            */
+
         // Check if the ip falls in under the subnet....
         if((ipaddr & currsubnet->subnet_mask) == currsubnet->subnet_addr) {
             return 1;

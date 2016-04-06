@@ -27,7 +27,7 @@
 **  
 **  mrouted 3.9-beta3 - COPYRIGHT 1989 by The Board of Trustees of 
 **  Leland Stanford Junior University.
-**  - Original license can be found in the Stanford.txt file.
+**  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
 /**
@@ -35,6 +35,7 @@
 *              file, and functions to configure the daemon.              
 */
 
+#include "defs.h"
 #include "igmpproxy.h"
                                       
 // Structure to keep configuration for VIFs...    
@@ -61,14 +62,14 @@ struct vifconfig*   vifconf;
 static struct Config commonConfig;
 
 // Prototypes...
-struct vifconfig *parsePhyintToken();
+struct vifconfig *parsePhyintToken(void);
 struct SubnetList *parseSubnetAddress(char *addrstr);
 
 
 /**
 *   Initializes common config..
 */
-void initCommonConfig() {
+void initCommonConfig(void) {
     commonConfig.robustnessValue = DEFAULT_ROBUSTNESS;
     commonConfig.queryInterval = INTERVAL_QUERY;
     commonConfig.queryResponseInterval = INTERVAL_QUERY_RESPONSE;
@@ -89,7 +90,7 @@ void initCommonConfig() {
 /**
 *   Returns a pointer to the common config...
 */
-struct Config *getCommonConfig() {
+struct Config *getCommonConfig(void) {
     return &commonConfig;
 }
 
@@ -130,11 +131,11 @@ int loadConfig(char *configFile) {
                 return 0;
             } else {
 
-                my_log(LOG_DEBUG, 0, "IF name : %s", tmpPtr->name);
-                my_log(LOG_DEBUG, 0, "Next ptr : %x", tmpPtr->next);
-                my_log(LOG_DEBUG, 0, "Ratelimit : %d", tmpPtr->ratelimit);
-                my_log(LOG_DEBUG, 0, "Threshold : %d", tmpPtr->threshold);
-                my_log(LOG_DEBUG, 0, "State : %d", tmpPtr->state);
+                my_log(LOG_DEBUG, 0, "IF name        : %s", tmpPtr->name);
+                my_log(LOG_DEBUG, 0, "Next ptr       : %x", tmpPtr->next);
+                my_log(LOG_DEBUG, 0, "Ratelimit      : %d", tmpPtr->ratelimit);
+                my_log(LOG_DEBUG, 0, "Threshold      : %d", tmpPtr->threshold);
+                my_log(LOG_DEBUG, 0, "State          : %d", tmpPtr->state);
                 my_log(LOG_DEBUG, 0, "Allowednet ptr : %x", tmpPtr->allowednets);
 
                 // Insert config, and move temppointer to next location...
@@ -169,7 +170,7 @@ int loadConfig(char *configFile) {
 /**
 *   Appends extra VIF configuration from config file.
 */
-void configureVifs() {
+void configureVifs(void) {
     unsigned Ix;
     struct IfDesc *Dp;
     struct vifconfig *confPtr;
@@ -195,6 +196,10 @@ void configureVifs() {
 
                     // Set the VIF state 
                     Dp->state = confPtr->state;
+
+                    if(Dp->state == IF_STATE_DOWNSTREAM) {
+                        Dp->isQuerier = true;
+                    }
                     
                     Dp->threshold = confPtr->threshold;
                     Dp->ratelimit = confPtr->ratelimit;
@@ -205,7 +210,7 @@ void configureVifs() {
                     // Insert the configured nets...
                     vifLast->next = confPtr->allowednets;
 
-		    Dp->allowedgroups = confPtr->allowedgroups;
+		            Dp->allowedgroups = confPtr->allowedgroups;
 
                     break;
                 }
@@ -218,7 +223,7 @@ void configureVifs() {
 /**
 *   Internal function to parse phyint config
 */
-struct vifconfig *parsePhyintToken() {
+struct vifconfig *parsePhyintToken(void) {
     struct vifconfig  *tmpPtr;
     struct SubnetList **anetPtr, **agrpPtr;
     char *token;
@@ -251,6 +256,7 @@ struct vifconfig *parsePhyintToken() {
     if(tmpPtr->name == NULL) {
         my_log(LOG_ERR, 0, "Out of memory.");
     }
+    //strcpy(tmpPtr->name, token);
 
     // Set the altnet pointer to the allowednets pointer.
     anetPtr = &tmpPtr->allowednets;
@@ -261,6 +267,8 @@ struct vifconfig *parsePhyintToken() {
     while(token != NULL) {
         if(strcmp("altnet", token)==0) {
             // Altnet...
+            //struct in_addr  networkAddr;
+
             token = nextConfigToken();
             my_log(LOG_DEBUG, 0, "Config: IF: Got altnet token %s.",token);
 
@@ -380,3 +388,4 @@ struct SubnetList *parseSubnetAddress(char *addrstr) {
 
     return tmpSubnet;
 }
+

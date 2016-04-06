@@ -27,7 +27,7 @@
 **  
 **  mrouted 3.9-beta3 - COPYRIGHT 1989 by The Board of Trustees of 
 **  Leland Stanford Junior University.
-**  - Original license can be found in the Stanford.txt file.
+**  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
 /**
@@ -42,6 +42,7 @@
 *
 */
 
+#include "defs.h"
 #include "igmpproxy.h"
 
 #define     READ_BUFFER_SIZE    512   // Inputbuffer size...
@@ -91,7 +92,7 @@ int openConfigFile(char *filename) {
 /**
 *   Closes the currently open config file.
 */
-void closeConfigFile() {
+void closeConfigFile(void) {
     // Close the file.
     if(confFilePtr!=NULL) {
         fclose(confFilePtr);
@@ -106,7 +107,7 @@ void closeConfigFile() {
 *   Returns the next token from the configfile. The function
 *   return NULL if there are no more tokens in the file.    
 */
-char *nextConfigToken() {
+char *nextConfigToken(void) {
 
     validToken = 0;
 
@@ -207,7 +208,7 @@ char *nextConfigToken() {
 *   Returns the currently active token, or null
 *   if no tokens are availible.
 */
-char *getCurrentConfigToken() {
+char *getCurrentConfigToken(void) {
     return validToken ? cToken : NULL;
 }
 

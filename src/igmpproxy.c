@@ -27,7 +27,7 @@
 **  
 **  mrouted 3.9-beta3 - COPYRIGHT 1989 by The Board of Trustees of 
 **  Leland Stanford Junior University.
-**  - Original license can be found in the Stanford.txt file.
+**  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
 /**
@@ -36,23 +36,35 @@
 *   February 2005 - Johnny Egeland
 */
 
+#include "defs.h"
 #include "igmpproxy.h"
 
+#include "version.h"
+#include "build.h"
+
+
+
+// Constants
+static const char Version[] = 
+//"igmpproxy, Version " VERSION ", Build" BUILD "\n"
+"Copyright 2005 by Johnny Egeland <johnny@rlo.org>\n"
+"Distributed under the GNU GENERAL PUBLIC LICENSE, Version 2 - check GPL.txt\n"
+"\n";
+
 static const char Usage[] = 
-"Usage: igmpproxy [-h] [-d] [-v [-v]] <configfile>\n"
+"usage: igmpproxy [-h] [-d] [-c <configfile>]\n"
 "\n" 
 "   -h   Display this help screen\n"
-"   -d   Run in debug mode. Output all messages on stderr\n"
-"   -v   Be verbose. Give twice to see even debug messages.\n"
+"   -c   Specify a location for the config file (default is '/etc/igmpproxy.conf').\n"
+"   -d   Run in debug mode. Does not fork deamon, and output all logmessages on stderr.\n"
 "\n"
-PACKAGE_STRING "\n"
 ;
 
 // Local function Prototypes
 static void signalHandler(int);
-int     igmpProxyInit();
-void    igmpProxyCleanUp();
-void    igmpProxyRun();
+int     igmpProxyInit(void);
+void    igmpProxyCleanUp(void);
+void    igmpProxyRun(void);
 
 // Global vars...
 static int sighandled = 0;
@@ -71,33 +83,50 @@ int         upStreamVif;
 */    
 int main( int ArgCn, char *ArgVc[] ) {
 
-    // Parse the commandline options and setup basic settings..
-    for (int c; (c = getopt(ArgCn, ArgVc, "vdh")) != -1;) {
-        switch (c) {
-        case 'd':
-            Log2Stderr = true;
-            break;
-        case 'v':
-            if (LogLevel == LOG_INFO)
-                LogLevel = LOG_DEBUG;
-            else
-                LogLevel = LOG_INFO;
-            break;
-        case 'h':
-            fputs(Usage, stderr);
-            exit(0);
-            break;
-        default:
-            exit(1);
-            break;
-        }
-    }
+    int debugMode = 0;
 
-    if (optind != ArgCn - 1) {
-	fputs("You must specify the configuration file.\n", stderr);
-	exit(1);
+    // Set the default config Filepath...
+    char* configFilePath = IGMPPROXY_CONFIG_FILEPATH;
+
+    // Display version 
+    fputs( Version, stderr );
+
+    // Parse the commandline options and setup basic settings..
+    int i = 1;
+    while (i < ArgCn) {
+
+        if ( strlen(ArgVc[i]) > 1 && ArgVc[i][0] == '-') {
+
+            switch ( ArgVc[i][1] ) {
+            case 'h':
+                fputs( Usage, stderr );
+                exit( 0 );
+
+            case 'd':
+                Log2Stderr = LOG_INFO;
+                /*
+            case 'v':
+                // Enable debug mode...
+                if (Log2Stderr < LOG_INFO) {
+                    Log2Stderr = LOG_INFO;
+                }
+                */
+                debugMode = 1;
+                break;
+
+            case 'c':
+                // Get new filepath...
+                if (i + 1 < ArgCn && ArgVc[i+1][0] != '-') {
+                    configFilePath = ArgVc[i+1];
+                    i++;
+                } else {
+                    my_log(LOG_ERR, 0, "Missing config file path after -c option.");
+                }
+                break;
+            }
+        }
+        i++;
     }
-    char *configFilePath = ArgVc[optind];
 
     // Chech that we are root
     if (geteuid() != 0) {
@@ -113,16 +142,19 @@ int main( int ArgCn, char *ArgVc[] ) {
     do {
 
         // Loads the config file...
-        if( ! loadConfig( configFilePath ) ) {
+        if(! loadConfig(configFilePath)) {
             my_log(LOG_ERR, 0, "Unable to load config file...");
             break;
         }
     
         // Initializes the deamon.
-        if ( !igmpProxyInit() ) {
+        if (!igmpProxyInit()) {
             my_log(LOG_ERR, 0, "Unable to initialize IGMPproxy.");
             break;
         }
+
+        // Eric, init switch snooping registers
+        //sw_snoop_init();
 
         // Go to the main loop.
         igmpProxyRun();
@@ -143,7 +175,7 @@ int main( int ArgCn, char *ArgVc[] ) {
 /**
 *   Handles the initial startup of the daemon.
 */
-int igmpProxyInit() {
+int igmpProxyInit(void) {
     struct sigaction sa;
     int Err;
 
@@ -201,11 +233,15 @@ int igmpProxyInit() {
     
     // Initialize IGMP
     initIgmp();
+
     // Initialize Routing table
     initRouteTable();
+
     // Initialize timer
     callout_init();
 
+    // Initialize member database for merge each of downstream statas.
+    memberDatabaseInit();
 
     return 1;
 }
@@ -213,7 +249,7 @@ int igmpProxyInit() {
 /**
 *   Clean up all on exit...
 */
-void igmpProxyCleanUp() {
+void igmpProxyCleanUp(void) {
 
     my_log( LOG_DEBUG, 0, "clean handler called" );
     
@@ -226,7 +262,7 @@ void igmpProxyCleanUp() {
 /**
 *   Main daemon loop.
 */
-void igmpProxyRun() {
+void igmpProxyRun(void) {
     // Get the config.
     //struct Config *config = getCommonConfig();
     // Set some needed values.
@@ -234,6 +270,7 @@ void igmpProxyRun() {
     int     MaxFD, Rt, secs;
     fd_set  ReadFDS;
     socklen_t dummy = 0;
+    struct sockaddr_in	saddr;
     struct  timeval  curtime, lasttime, difftime, tv; 
     // The timeout is a pointer in order to set it to NULL if nessecary.
     struct  timeval  *timeout = &tv;
@@ -244,7 +281,10 @@ void igmpProxyRun() {
     lasttime = curtime;
 
     // First thing we send a membership query in downstream VIF's...
-    sendGeneralMembershipQuery();
+    struct  IfDesc  *Dp;
+    int             Ix;
+    for ( Ix = 0; (Dp = getIfByIx(Ix)); Ix++ ) 
+        sendGeneralMembershipQuery(Dp);
 
     // Loop until the end...
     for (;;) {
@@ -273,7 +313,7 @@ void igmpProxyRun() {
         FD_ZERO( &ReadFDS );
         FD_SET( MRouterFD, &ReadFDS );
 
-        // wait for input
+        // wait for input or time out
         Rt = select( MaxFD +1, &ReadFDS, NULL, NULL, timeout );
 
         // log and ignore failures
@@ -285,9 +325,9 @@ void igmpProxyRun() {
 
             // Read IGMP request, and handle it...
             if( FD_ISSET( MRouterFD, &ReadFDS ) ) {
-    
+                dummy = sizeof(saddr);
                 recvlen = recvfrom(MRouterFD, recv_buf, RECV_BUF_SIZE,
-                                   0, NULL, &dummy);
+                                   0, (struct sockaddr *)&saddr, &dummy);
                 if (recvlen < 0) {
                     if (errno != EINTR) my_log(LOG_ERR, errno, "recvfrom");
                     continue;

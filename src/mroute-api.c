@@ -27,7 +27,7 @@
 **  
 **  mrouted 3.9-beta3 - COPYRIGHT 1989 by The Board of Trustees of 
 **  Leland Stanford Junior University.
-**  - Original license can be found in the Stanford.txt file.
+**  - Original license can be found in the "doc/mrouted-LINCESE" file.
 **
 */
 /**
@@ -37,6 +37,8 @@
 */
 
 
+#define USE_LINUX_IN_H
+#include "defs.h"
 #include "igmpproxy.h"
 
 // MAX_MC_VIFS from mclab.h must have same value as MAXVIFS from mroute.h
@@ -64,7 +66,7 @@ static struct VifDesc {
 ** returns: - 0 if the functions succeeds     
 **          - the errno value for non-fatal failure condition
 */
-int enableMRouter()
+int enableMRouter(void)
 {
     int Va = 1;
 
@@ -162,23 +164,55 @@ int addMRoute( struct MRouteDesc *Dp )
 
     /* copy the TTL vector
      */
+    if (    sizeof( CtlReq.mfcc_ttls ) != sizeof( Dp->TtlVc ) 
+            || VCMC( CtlReq.mfcc_ttls ) != VCMC( Dp->TtlVc )
+       )
+        my_log( LOG_ERR, 0, "data types doesn't match in " __FILE__ ", source adaption needed !" );
 
     memcpy( CtlReq.mfcc_ttls, Dp->TtlVc, sizeof( CtlReq.mfcc_ttls ) );
 
     {
         char FmtBuO[ 32 ], FmtBuM[ 32 ];
 
-        my_log( LOG_NOTICE, 0, "Adding MFC: %s -> %s, InpVIf: %d", 
+        my_log( LOG_NOTICE, 0, "Adding MFC: %s -> %s, InpVIf: %d, Downstream %d, %d, %d, %d, %d, %d, %d, %d, %d, %d", 
              fmtInAdr( FmtBuO, CtlReq.mfcc_origin ), 
              fmtInAdr( FmtBuM, CtlReq.mfcc_mcastgrp ),
-             (int)CtlReq.mfcc_parent
+             (int)CtlReq.mfcc_parent, 
+(int)CtlReq.mfcc_ttls[0], 
+(int)CtlReq.mfcc_ttls[1], 
+(int)CtlReq.mfcc_ttls[2],
+(int)CtlReq.mfcc_ttls[3],
+(int)CtlReq.mfcc_ttls[4],
+(int)CtlReq.mfcc_ttls[5],
+(int)CtlReq.mfcc_ttls[6],
+(int)CtlReq.mfcc_ttls[7],
+(int)CtlReq.mfcc_ttls[8],
+(int)CtlReq.mfcc_ttls[9]
            );
     }
 
     rc = setsockopt( MRouterFD, IPPROTO_IP, MRT_ADD_MFC,
 		    (void *)&CtlReq, sizeof( CtlReq ) );
-    if (rc)
+    if (rc) {
         my_log( LOG_WARNING, errno, "MRT_ADD_MFC" );
+    } else {
+#if 0
+        /* XXX: Add multicast routing entry to FPP */
+        my_log(LOG_INFO, 0, "Add multicast routing entry to FPP");
+        char cmd[128];
+        memset(cmd, 0, 128);
+        // add fpp rule
+        sprintf(cmd, "cmm -c set mc4 interface eth0 add group 0.0.0.0 %s %s", 
+            inetFmt(CtlReq.mfcc_origin.s_addr, s1), inetFmt(CtlReq.mfcc_mcastgrp.s_addr, s2));
+        system(cmd);
+
+        my_log(LOG_INFO, 0, "Add multicast routing entry to FPP cmd %s", cmd);
+        
+        //handle_fpp_join(CtlReq.mfcc_origin.s_addr, Dp->McAdr.s_addr);
+        //IGMP_snooping_handle_join(CtlReq.mfcc_origin.s_addr, CtlReq.mfcc_mcastgrp.s_addr);
+#endif
+
+    }
 
     return rc;
 }
@@ -214,8 +248,21 @@ int delMRoute( struct MRouteDesc *Dp )
 
     rc = setsockopt( MRouterFD, IPPROTO_IP, MRT_DEL_MFC,
 		    (void *)&CtlReq, sizeof( CtlReq ) );
-    if (rc)
+    if (rc) {
         my_log( LOG_WARNING, errno, "MRT_DEL_MFC" );
+    } else {
+        /* XXX: Delete multicast routing entry to FPP */
+        my_log(LOG_INFO, 0, "Delete multicast routing entry from FPP");
+        char cmd[128];
+        memset(cmd, 0, 128);
+        // del fpp rule
+        sprintf(cmd, "cmm -c set mc4 interface eth0 del group 0.0.0.0 %s %s", 
+            inetFmt(CtlReq.mfcc_origin.s_addr, s1), inetFmt(CtlReq.mfcc_mcastgrp.s_addr, s2));
+        system(cmd);
+
+        my_log(LOG_INFO, 0, "Del multicast routing entry to FPP cmd %s", cmd);
+        //handle_fpp_leave(CtlReq.mfcc_origin.s_addr, Dp->McAdr.s_addr);
+    }
 
     return rc;
 }
